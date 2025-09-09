@@ -88,25 +88,26 @@ if (document.getElementById('proc-table')) {
 if (document.getElementById('fan-grid')) {
     let fanData = {};
     let selectedFans = new Set();
+    let sensors = [];
+    let curves = { enabled: false, curves: [] };
 
     // Load fan data
     function loadFanData() {
         Promise.all([
-            fetch('/api/fans').then(r => {
-                if (!r.ok) throw new Error(`HTTP ${r.status}: ${r.statusText}`);
-                return r.json();
-            }),
-            fetch('/api/fans/fancontrol/status').then(r => r.json())
+            fetch('/api/fans').then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}: ${r.statusText}`); return r.json(); }),
+            fetch('/api/fans/liquidctl/status').then(r => r.json()),
+            fetch('/api/fans/sensors').then(r => r.json()),
+            fetch('/api/fans/curves').then(r => r.json())
         ])
-        .then(([fanData, fanControlStatus]) => {
-            console.log('Fan data received:', fanData);
-            console.log('FanControl status:', fanControlStatus);
-            
-            fanData = fanData;
+        .then(([fansRes, liquidctlStatus, sensorsRes, curvesRes]) => {
+            fanData = fansRes;
+            sensors = sensorsRes.sensors || [];
+            curves = curvesRes || { enabled: false, curves: [] };
             displayFanCards(fanData);
             displayOverview(fanData);
-            displayFanControlStatus(fanControlStatus);
+            displayLiquidctlStatus(liquidctlStatus);
             displayControlInfo(fanData);
+            initCurveEditor();
             updateControlPanel();
         })
         .catch(e => {
@@ -133,18 +134,19 @@ if (document.getElementById('fan-grid')) {
                 <div><strong>Running:</strong> ${runningFans}</div>
                 <div><strong>FanControl:</strong> ${fanControlStatus}</div>
                 <div><strong>LibreHardwareMonitor:</strong> ${libreStatus}</div>
+                <div><strong>liquidctl:</strong>  ${data.liquidctl_available ? ? Ready : ? Not detected}</div> 
                 ${dataSourceInfo}
             </div>
         `;
     }
 
-    // Display FanControl status
-    function displayFanControlStatus(status) {
+    // Display liquidctl status
+    function displayLiquidctlStatus(status) {
         const fanControlDiv = document.getElementById('liquidctl-status');
         if (status.available && status.running) {
             fanControlDiv.innerHTML = `
                 <div class="status-info">
-                    ✓ FanControl is running and available for configuration
+                    ? liquidctl is available
                     <details style="margin-top: 0.5rem;">
                         <summary>Show process info</summary>
                         <pre style="margin: 0.5rem 0; padding: 0.5rem; background: #1a1a1a; border-radius: 4px;">${status.process_info}</pre>
@@ -154,7 +156,7 @@ if (document.getElementById('fan-grid')) {
         } else {
             fanControlDiv.innerHTML = `
                 <div class="status-warning">
-                    ⚠ FanControl not running - ${status.message}
+                    ? liquidctl not found. Install via Python: <code>pip install liquidctl</code>
                     <div style="margin-top: 0.5rem; font-size: 0.9rem;">
                         Download: <a href="${status.download_link}" target="_blank">FanControl by Rem0o</a>
                     </div>
@@ -392,113 +394,97 @@ if (document.getElementById('fan-grid')) {
     });
 
     // FanControl integration event handlers
-    const fanControlFanId = document.getElementById('fancontrol-fanid');
-    const fanControlSpeedSlider = document.getElementById('fancontrol-speed-slider');
-    const fanControlSpeedValue = document.getElementById('fancontrol-speed-value');
-    const fanControlApplyBtn = document.getElementById('fancontrol-apply-btn');
-    const fanControlStatusBtn = document.getElementById('fancontrol-status-btn');
-    const fanControlResult = document.getElementById('fancontrol-result');
-
-    // Update FanControl speed display
-    fanControlSpeedSlider.addEventListener('input', () => {
-        fanControlSpeedValue.textContent = fanControlSpeedSlider.value;
     });
 
-    // Apply FanControl configuration
-    fanControlApplyBtn.addEventListener('click', () => {
-        const fanId = fanControlFanId.value.trim();
-        const speed = parseInt(fanControlSpeedSlider.value);
+    // Curves editor elements and helpers
+    const curvesEnabled = document.getElementById('curves-enabled');
+    const curveTarget = document.getElementById('curve-target');
+    const curveSensor = document.getElementById('curve-sensor');
+    const curvePoints = document.getElementById('curve-points');
+    const curveAddPoint = document.getElementById('curve-add-point');
+    const curveSave = document.getElementById('curve-save');
+    const curveRemove = document.getElementById('curve-remove');
+    const curveResult = document.getElementById('curve-result');
 
-        if (!fanId) {
-            fanControlResult.innerHTML = '<div class="status-warning">Please enter a Fan ID</div>';
-            return;
-        }
-
-        fanControlApplyBtn.disabled = true;
-        fanControlApplyBtn.textContent = 'Checking...';
-
-        fetch('/api/fans/fancontrol', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ fanId, speed })
-        })
-        .then(r => r.json())
-        .then(res => {
-            if (res.ok && res.fancontrol_running) {
-                fanControlResult.innerHTML = `
-                    <div class="status-info">
-                        <strong>FanControl Configuration Required</strong><br>
-                        ${res.message}<br>
-                        <div style="margin-top: 0.5rem;">
-                            <strong>Next Steps:</strong><br>
-                            1. ${res.instructions.step1}<br>
-                            2. ${res.instructions.step2}<br>
-                            3. ${res.instructions.step3}<br>
-                            4. ${res.instructions.step4}
-                        </div>
-                    </div>
-                `;
-                showStatusMessage(`FanControl ready: Configure ${fanId} to ${speed}%`, 'info');
-            } else {
-                fanControlResult.innerHTML = `
-                    <div class="status-warning">
-                        <strong>FanControl Not Running</strong><br>
-                        ${res.message}<br>
-                        <div style="margin-top: 0.5rem;">
-                            <a href="${res.download}" target="_blank">Download FanControl</a>
-                        </div>
-                    </div>
-                `;
-                showStatusMessage('FanControl not detected', 'error');
-            }
-        })
-        .catch(e => {
-            fanControlResult.innerHTML = `<div class="status-warning">Request Error: ${e.message}</div>`;
-        })
-        .finally(() => {
-            fanControlApplyBtn.disabled = false;
-            fanControlApplyBtn.textContent = 'Configure in FanControl';
+    function renderCurvePoints(points = [ { t: 30, s: 30 }, { t: 45, s: 50 }, { t: 65, s: 80 }, { t: 80, s: 100 } ]) {
+        if (!curvePoints) return;
+        curvePoints.innerHTML = '';
+        points.forEach((p, idx) => {
+            const row = document.createElement('div');
+            row.style.display = 'flex';
+            row.style.gap = '0.5rem';
+            row.innerHTML = `
+                <label>Temp °C <input type="number" data-idx="${idx}" data-key="t" value="${p.t}" style="width:80px;"></label>
+                <label>Speed % <input type="number" data-idx="${idx}" data-key="s" value="${p.s}" style="width:80px;"></label>
+            `;
+            curvePoints.appendChild(row);
         });
+    }
+    function collectCurvePoints() {
+        const inputs = curvePoints ? curvePoints.querySelectorAll('input') : [];
+        const pts = [];
+        inputs.forEach(inp => {
+            const idx = parseInt(inp.getAttribute('data-idx'));
+            const key = inp.getAttribute('data-key');
+            if (!pts[idx]) pts[idx] = { t: 0, s: 0 };
+            pts[idx][key] = parseInt(inp.value);
+        });
+        return pts.filter(Boolean).sort((a,b)=>a.t-b.t);
+    }
+    function initCurveEditor() {
+        if (!curveTarget || !curveSensor) return;
+        // liquidctl targets
+        const liquidFans = (fanData.fans || []).filter(f => f.source === 'liquidctl');
+        curveTarget.innerHTML = '';
+        liquidFans.forEach(f => {
+            const opt = document.createElement('option');
+            opt.value = f.id;
+            opt.textContent = `${f.name} (${f.id})`;
+            curveTarget.appendChild(opt);
+        });
+        // sensors
+        curveSensor.innerHTML = '';
+        (sensors || []).forEach(s => {
+            const opt = document.createElement('option');
+            opt.value = s.id;
+            opt.textContent = `${s.name} (${s.hardware})`;
+            curveSensor.appendChild(opt);
+        });
+        if (curvesEnabled) curvesEnabled.checked = !!(curves && curves.enabled);
+        const loadSelected = () => {
+            const c = (curves.curves || []).find(x => x.targetId === curveTarget.value);
+            if (c) { curveSensor.value = c.sensorId; renderCurvePoints(c.points || []); }
+            else { renderCurvePoints(); }
+        };
+        curveTarget.onchange = loadSelected;
+        loadSelected();
+    }
+    curvesEnabled?.addEventListener('change', () => {
+        fetch('/api/fans/curves/enable', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: curvesEnabled.checked }) })
+            .then(r => r.json()).then(res => showStatusMessage(`Curves ${res.enabled ? 'enabled' : 'disabled'}`))
+            .catch(e => showStatusMessage(`Failed to toggle curves: ${e.message}`, 'error'));
     });
-
-    // Check FanControl status
-    fanControlStatusBtn.addEventListener('click', () => {
-        fanControlStatusBtn.disabled = true;
-        fanControlStatusBtn.textContent = 'Checking...';
-
-        fetch('/api/fans/fancontrol/status')
-        .then(r => r.json())
-        .then(res => {
-            if (res.available && res.running) {
-                fanControlResult.innerHTML = `
-                    <div class="status-info">
-                        <strong>FanControl Status: Running</strong><br>
-                        ${res.message}<br>
-                        <details style="margin-top: 0.5rem;">
-                            <summary>Process Details</summary>
-                            <pre style="background: #1a1a1a; padding: 0.5rem; border-radius: 4px;">${res.process_info}</pre>
-                        </details>
-                    </div>
-                `;
-            } else {
-                fanControlResult.innerHTML = `
-                    <div class="status-warning">
-                        <strong>FanControl Status: Not Running</strong><br>
-                        ${res.message}<br>
-                        <div style="margin-top: 0.5rem;">
-                            <a href="${res.download_link}" target="_blank">Download FanControl</a>
-                        </div>
-                    </div>
-                `;
-            }
-        })
-        .catch(e => {
-            fanControlResult.innerHTML = `<div class="status-warning">Status Check Error: ${e.message}</div>`;
-        })
-        .finally(() => {
-            fanControlStatusBtn.disabled = false;
-            fanControlStatusBtn.textContent = 'Check FanControl Status';
-        });
+    curveAddPoint?.addEventListener('click', () => {
+        const pts = collectCurvePoints();
+        pts.push({ t: (pts.at(-1)?.t || 80) + 5, s: 100 });
+        renderCurvePoints(pts);
+    });
+    curveSave?.addEventListener('click', () => {
+        const targetId = curveTarget.value;
+        const targetName = curveTarget.selectedOptions[0]?.textContent;
+        const sensorId = curveSensor.value;
+        const sensorName = curveSensor.selectedOptions[0]?.textContent;
+        const points = collectCurvePoints();
+        fetch('/api/fans/curves', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ targetId, targetName, sensorId, sensorName, points }) })
+            .then(r => r.json()).then(() => { if (curveResult) curveResult.innerHTML = '<div class="status-info">Curve saved.</div>'; showStatusMessage('Curve saved'); })
+            .catch(e => { if (curveResult) curveResult.innerHTML = `<div class="status-warning">${e.message}</div>`; });
+    });
+    curveRemove?.addEventListener('click', () => {
+        const c = (curves.curves || []).find(x => x.targetId === curveTarget.value);
+        if (!c) { if (curveResult) curveResult.innerHTML = '<div class="status-warning">No existing curve</div>'; return; }
+        fetch(`/api/fans/curves/${encodeURIComponent(c.id)}`, { method: 'DELETE' })
+            .then(r => r.json()).then(() => { if (curveResult) curveResult.innerHTML = '<div class="status-info">Curve removed.</div>'; showStatusMessage('Curve removed'); })
+            .catch(e => { if (curveResult) curveResult.innerHTML = `<div class="status-warning">${e.message}</div>`; });
     });
 
     // Load data on page load

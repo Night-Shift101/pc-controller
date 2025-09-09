@@ -1,11 +1,10 @@
 const express = require('express');
 const cors = require('cors');
 const si = require('systeminformation');
-const { spawn, execFile } = require('child_process');
+const { spawn, exec, execFile } = require('child_process');
 const { WebSocketServer } = require('ws');
 const { OpenRGBClient } = require('openrgb-sdk');
 const fs = require('fs');
-const { exec } = require('child_process');
 const fetch = require('node-fetch');
 require('dotenv').config();
 
@@ -31,7 +30,7 @@ app.post('/api/errors', (req, res) => {
     res.json({ ok: true });
 });
 
-// ---- WebSocket broadcast (live updates) ----equire('ws');
+// ---- WebSocket broadcast (live updates) ----
 
 const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
@@ -149,7 +148,7 @@ app.post('/api/system/volume', (req, res) => {
 // ---- Fan Control using FanControl Application ----
 
 const FANCONTROL_CONFIG_PATH = process.env.FANCONTROL_CONFIG || 'C:\\Users\\%USERNAME%\\AppData\\Roaming\\FanControl\\';
-const LIBRE_HARDWARE_MONITOR_URL = 'http://127.0.0.1:8085/data.json';
+const LIBRE_HARDWARE_MONITOR_URL = process.env.LHM_URL || 'http://127.0.0.1:8085/data.json';
 
 // Helper function to read fans from FanControl
 async function readFanControlData() {
@@ -205,21 +204,21 @@ async function readFanControlData() {
                 Write-Output "DATA_SOURCE:FanControl_Simulated"
                 Write-Output "NOTE:FanControl detected but using simulated data. Configure sensors in FanControl for real data."
             `;
-            
-            exec(`powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "${psScript}"`, 
-                { windowsHide: true, timeout: 10000 }, 
+
+            exec(`powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "${psScript}"`,
+                { windowsHide: true, timeout: 10000 },
                 (err, stdout, stderr) => {
                     if (err || stderr.includes('ERROR')) {
                         console.error('FanControl read error:', stderr || err?.message);
-                        resolve({ 
-                            fans: [], 
-                            temperatures: [], 
+                        resolve({
+                            fans: [],
+                            temperatures: [],
                             error: 'FanControl not running or accessible',
                             fancontrol_available: false
                         });
                         return;
                     }
-                    
+
                     const lines = stdout.split('\n').map(line => line.trim()).filter(line => line.length > 0);
                     const fans = [];
                     const temperatures = [];
@@ -228,7 +227,7 @@ async function readFanControlData() {
                     let fanControlPid = '';
                     let dataSource = 'FanControl';
                     let note = '';
-                    
+
                     for (const line of lines) {
                         if (line.startsWith('FANCONTROL_RUNNING:')) {
                             fanControlRunning = line.split(':')[1] === 'true';
@@ -273,11 +272,11 @@ async function readFanControlData() {
                             }
                         }
                     }
-                    
+
                     console.log(`FanControl found ${fans.length} fans and ${temperatures.length} temperature sensors (PID: ${fanControlPid})`);
-                    resolve({ 
-                        fans, 
-                        temperatures, 
+                    resolve({
+                        fans,
+                        temperatures,
                         fancontrol_available: fanControlRunning,
                         config_path: configPath,
                         fancontrol_pid: fanControlPid,
@@ -289,9 +288,9 @@ async function readFanControlData() {
         });
     } catch (e) {
         console.error('FanControl integration error:', e.message);
-        return { 
-            fans: [], 
-            temperatures: [], 
+        return {
+            fans: [],
+            temperatures: [],
             error: e.message,
             fancontrol_available: false
         };
@@ -301,19 +300,27 @@ async function readFanControlData() {
 // Helper function to read fans from LibreHardwareMonitor (fallback)
 async function readLibreHardwareFans() {
     try {
-        const res = await fetch(LIBRE_HARDWARE_MONITOR_URL);
-        if (!res.ok) {
-            throw new Error(`LibreHardwareMonitor not responding: ${res.status}`);
+        let data = null;
+        try {
+            const res = await fetch(LIBRE_HARDWARE_MONITOR_URL);
+            if (!res.ok) throw new Error(`LibreHardwareMonitor not responding: ${res.status}`);
+            data = await res.json();
+        } catch (e) {
+            const snap = path.join(__dirname, 'output.json');
+            if (fs.existsSync(snap)) {
+                data = JSON.parse(fs.readFileSync(snap, 'utf8'));
+            } else {
+                throw e;
+            }
         }
-        const data = await res.json();
 
         const fans = [];
         const temperatures = [];
-        
+
         function walkHardware(node, parentPath = '') {
             // Build hardware path for better identification
             const currentPath = parentPath ? `${parentPath} → ${node.Text}` : node.Text;
-            
+
             if (node.Children && Array.isArray(node.Children)) {
                 for (const child of node.Children) {
                     // Check if this child has sensor data directly
@@ -321,7 +328,7 @@ async function readLibreHardwareFans() {
                         const rpmValue = child.Value ? parseFloat(child.Value.replace(' RPM', '')) : 0;
                         const minRpm = child.Min ? parseFloat(child.Min.replace(' RPM', '')) : 0;
                         const maxRpm = child.Max ? parseFloat(child.Max.replace(' RPM', '')) : null;
-                        
+
                         fans.push({
                             id: child.SensorId,
                             name: child.Text,
@@ -336,7 +343,7 @@ async function readLibreHardwareFans() {
                         });
                     } else if (child.Type === 'Temperature' && child.SensorId) {
                         const tempValue = child.Value ? parseFloat(child.Value.replace(/[°C\s]/g, '')) : null;
-                        
+
                         temperatures.push({
                             id: child.SensorId,
                             name: child.Text,
@@ -345,7 +352,7 @@ async function readLibreHardwareFans() {
                             type: 'temperature'
                         });
                     }
-                    
+
                     // Recurse into children regardless
                     walkHardware(child, currentPath);
                 }
@@ -354,7 +361,7 @@ async function readLibreHardwareFans() {
 
         // Start walking from the root
         walkHardware(data);
-        
+
         console.log(`LibreHardwareMonitor found ${fans.length} fans and ${temperatures.length} temperature sensors`);
         return { fans, temperatures };
     } catch (e) {
@@ -363,14 +370,96 @@ async function readLibreHardwareFans() {
     }
 }
 
-// Helper function to set fan speed via FanControl
+// ---- liquidctl helpers ----
+const LIQUIDCTL_PATH = process.env.LIQUIDCTL_PATH || 'liquidctl';
+async function runLiquidctl(args, opts = {}) {
+    return new Promise((resolve) => {
+        execFile(LIQUIDCTL_PATH, args, { windowsHide: true, timeout: 5000, ...opts }, (err, stdout, stderr) => {
+            if (err) resolve({ ok: false, code: err.code, stdout: stdout?.toString() || '', stderr: stderr?.toString() || err.message });
+            else resolve({ ok: true, code: 0, stdout: stdout?.toString() || '', stderr: stderr?.toString() || '' });
+        }).on('error', (e) => resolve({ ok: false, code: -1, stdout: '', stderr: e.message }));
+    });
+}
+async function liquidctlAvailable() {
+    const res = await runLiquidctl(['--version']);
+    return res.ok;
+}
+async function listLiquidctlDevices() {
+    const avail = await liquidctlAvailable();
+    if (!avail) return { available: false, devices: [], fans: [], error: 'liquidctl not found' };
+    const out = await runLiquidctl(['list']);
+    const devices = [];
+    const fans = [];
+    if (out.ok) {
+        const lines = out.stdout.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+        for (const ln of lines) {
+            const m = ln.match(/Device\s+(\d+)\s*[:,]\s*(.+)/i) || ln.match(/(\d+)\s*:\s*(.+)/);
+            if (m) devices[parseInt(m[1], 10)] = { index: parseInt(m[1], 10), name: m[2].trim() };
+        }
+        for (let i = 0; i < devices.length; i++) {
+            if (!devices[i]) continue;
+            const st = await runLiquidctl(['--device', String(i), 'status', '--json']);
+            if (st.ok) {
+                try {
+                    const json = JSON.parse(st.stdout);
+                    const readings = Array.isArray(json) ? json : (Array.isArray(json.status) ? json.status : []);
+                    const device = devices[i];
+                    readings.forEach(r => {
+                        const key = (r.key || r.name || '').toLowerCase();
+                        if (key.includes('fan') || key.includes('pump')) {
+                            const ch = (r.channel || r.key || r.name || '').toString().toLowerCase().replace(/\s+/g, '');
+                            const rpm = typeof r.value === 'number' ? r.value : parseFloat(String(r.value).replace(/[^0-9.]/g, ''));
+                            fans.push({ id: `liquidctl:${i}:${ch || 'fan'}`, name: `${device.name} ${ch || 'fan'}`, rpm: rpm || 0, min: 0, max: null, hardware: device.name, type: 'fan', status: (rpm || 0) > 0 ? 'running' : 'stopped', health: (rpm || 0) > 100 ? 'good' : ((rpm || 0) > 0 ? 'warning' : 'stopped'), controllable: true, source: 'liquidctl', deviceIndex: i, channel: ch || 'fan' });
+                        }
+                    });
+                } catch {
+                    const lines2 = st.stdout.split(/\r?\n/).map(s => s.trim());
+                    const device = devices[i];
+                    lines2.forEach(line => {
+                        const lower = line.toLowerCase();
+                        const m2 = lower.match(/(fan\s*\d*|pump)\s*speed\s*:\s*([0-9.]+)/);
+                        if (m2) {
+                            const ch = m2[1].replace(/\s+/g, '');
+                            const rpm = parseFloat(m2[2]);
+                            fans.push({ id: `liquidctl:${i}:${ch}`, name: `${device.name} ${ch}`, rpm: rpm || 0, min: 0, max: null, hardware: device.name, type: 'fan', status: (rpm || 0) > 0 ? 'running' : 'stopped', health: (rpm || 0) > 100 ? 'good' : ((rpm || 0) > 0 ? 'warning' : 'stopped'), controllable: true, source: 'liquidctl', deviceIndex: i, channel: ch });
+                        }
+                    });
+                }
+            }
+        }
+    }
+    return { available: true, devices: devices.filter(Boolean), fans };
+}
+async function setLiquidctlSpeedById(fanId, speedPercent) {
+    const m = String(fanId).match(/^liquidctl:(\d+):([A-Za-z0-9_-]+)/);
+    if (!m) return { success: false, error: 'Unsupported fanId (expected liquidctl:<index>:<channel>)' };
+    const idx = m[1];
+    const channel = m[2];
+    const pct = Math.max(0, Math.min(100, Math.round(speedPercent)));
+    const res = await runLiquidctl(['--device', String(idx), 'set', channel, 'speed', String(pct)], { timeout: 7000 });
+    if (!res.ok) return { success: false, error: res.stderr || 'liquidctl set failed' };
+    return { success: true, fanId, speed: pct, method: 'liquidctl' };
+}
+
+// ---- Fan curves storage & loop ----
+const FAN_DATA_DIR = path.join(__dirname, 'data');
+const FAN_CURVES_PATH = path.join(FAN_DATA_DIR, 'fan_curves.json');
+try { if (!fs.existsSync(FAN_DATA_DIR)) fs.mkdirSync(FAN_DATA_DIR, { recursive: true }); } catch {}
+let curvesState = { enabled: false, curves: [] };
+try { if (fs.existsSync(FAN_CURVES_PATH)) { curvesState = JSON.parse(fs.readFileSync(FAN_CURVES_PATH, 'utf8')); curvesState.enabled = !!curvesState.enabled; curvesState.curves = Array.isArray(curvesState.curves) ? curvesState.curves : []; } } catch {}
+function saveCurves() { try { fs.writeFileSync(FAN_CURVES_PATH, JSON.stringify(curvesState, null, 2)); } catch (e) { console.error('Failed to save fan curves:', e.message); } }
+function interpSpeed(points, temp) { if (!Array.isArray(points) || points.length === 0) return 0; const pts = [...points].sort((a,b)=>a.t-b.t); if (temp <= pts[0].t) return pts[0].s; if (temp >= pts[pts.length-1].t) return pts[pts.length-1].s; for (let i=0;i<pts.length-1;i++){const a=pts[i],b=pts[i+1]; if (temp>=a.t && temp<=b.t){ const k=(temp-a.t)/(b.t-a.t); return Math.round(a.s + k*(b.s-a.s)); } } return pts[0].s; }
+let lastApplied = new Map(); let applying = false;
+setInterval(async () => { if (!curvesState.enabled || applying) return; if (!curvesState.curves || curvesState.curves.length===0) return; applying = true; try { const libre = await readLibreHardwareFans(); const tempsById = new Map((libre.temperatures||[]).map(t=>[t.id,t.value])); for (const c of curvesState.curves) { const temp = tempsById.get(c.sensorId); if (typeof temp !== 'number') continue; const target = Math.max(0, Math.min(100, interpSpeed(c.points||[], temp))); const prev = lastApplied.get(c.targetId); if (prev === target) continue; const res = await setLiquidctlSpeedById(c.targetId, target); if (res.success) lastApplied.set(c.targetId, target); } } catch { } finally { applying = false; } }, 3000);
+
+// ---- New fan APIs (libre + liquidctl + curves) ----
 async function setFanSpeed(fanId, speedPercent) {
     try {
         // FanControl uses PowerShell scripts and fan configuration files
         // We'll attempt to use FanControl's command line interface or create temp profiles
         return new Promise((resolve) => {
             console.log(`Attempting FanControl fan speed: ${fanId} -> ${speedPercent}%`);
-            
+
             // Create a PowerShell script to interact with FanControl
             const psScript = `
                 # Check if FanControl is running
@@ -386,9 +475,9 @@ async function setFanSpeed(fanId, speedPercent) {
                 Write-Output "Fan: ${fanId}"
                 Write-Output "Target Speed: ${speedPercent}%"
             `;
-            
-            exec(`powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "${psScript}"`, 
-                { windowsHide: true, timeout: 5000 }, 
+
+            exec(`powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "${psScript}"`,
+                { windowsHide: true, timeout: 5000 },
                 (err, stdout, stderr) => {
                     if (err || stderr.includes('ERROR')) {
                         console.log(`FanControl not available for ${fanId}, providing instructions`);
@@ -456,19 +545,48 @@ async function setLibreHardwareFanSpeed(fanId, speedPercent) {
 
 app.get('/api/fans', async (req, res) => {
     try {
+        // New implementation: combine LibreHardwareMonitor monitoring with liquidctl controllable fans
+        try {
+            const [libre, lq] = await Promise.all([readLibreHardwareFans(), listLiquidctlDevices()]);
+            const combined = [];
+            if (lq.available) combined.push(...(lq.fans || []));
+            const existingIds = new Set(combined.map(f => f.id));
+            (libre.fans || []).forEach(f => { if (!existingIds.has(f.id)) combined.push(f); });
+            const temps = libre.temperatures || [];
+            const enhanced = combined.map(f => {
+                let related = null;
+                const lname = (f.name || '').toLowerCase();
+                if (lname.includes('cpu')) related = temps.find(t => (t.name || '').toLowerCase().includes('cpu'));
+                if (!related && lname.includes('gpu')) related = temps.find(t => (t.name || '').toLowerCase().includes('gpu'));
+                if (!related) related = temps.find(t => t.hardware === f.hardware) || temps[0];
+                return { ...f, temperature: related ? related.value : null, temperatureSensor: related ? related.name : null };
+            });
+            res.json({
+                fans: enhanced,
+                temperatures: temps,
+                libre_hardware_available: !libre.error,
+                liquidctl_available: !!lq.available,
+                data_source: lq.available ? 'liquidctl+LibreHardwareMonitor' : (!libre.error ? 'LibreHardwareMonitor' : 'None'),
+                total_fans: enhanced.length,
+                running_fans: enhanced.filter(f => f.status === 'running').length
+            });
+            return;
+        } catch (e2) {
+            // fall through to legacy path if something goes wrong
+        }
         console.log('Fetching fan data from FanControl...');
-        
+
         // Try FanControl first
         const fanControlData = await readFanControlData();
-        
+
         let finalData = fanControlData;
         let dataSource = 'FanControl';
-        
+
         // If FanControl fails, fallback to LibreHardwareMonitor
         if (!fanControlData.fancontrol_available || fanControlData.fans.length === 0) {
             console.log('FanControl not available, trying LibreHardwareMonitor...');
             const libreData = await readLibreHardwareFans();
-            
+
             if (libreData.fans.length > 0) {
                 finalData = {
                     fans: libreData.fans,
@@ -490,41 +608,41 @@ app.get('/api/fans', async (req, res) => {
                 dataSource = 'None';
             }
         }
-        
+
         // Enhance fan data with temperature correlation
         const enhancedFans = finalData.fans.map(fan => {
             // Try to find related temperature sensor
             let relatedTemp = null;
-            
+
             // Look for CPU temperature if this is a CPU fan
             if (fan.name.toLowerCase().includes('cpu')) {
-                relatedTemp = finalData.temperatures.find(temp => 
-                    temp.name.toLowerCase().includes('cpu') && 
+                relatedTemp = finalData.temperatures.find(temp =>
+                    temp.name.toLowerCase().includes('cpu') &&
                     temp.hardware === fan.hardware
                 );
             }
-            
+
             // Look for system temperature if this is a system fan
             if (fan.name.toLowerCase().includes('system') && !relatedTemp) {
-                relatedTemp = finalData.temperatures.find(temp => 
-                    temp.name.toLowerCase().includes('system') && 
+                relatedTemp = finalData.temperatures.find(temp =>
+                    temp.name.toLowerCase().includes('system') &&
                     temp.hardware === fan.hardware
                 );
             }
-            
+
             // Look for GPU temperature if this is a GPU fan
             if (fan.name.toLowerCase().includes('gpu') && !relatedTemp) {
-                relatedTemp = finalData.temperatures.find(temp => 
-                    temp.name.toLowerCase().includes('gpu') && 
+                relatedTemp = finalData.temperatures.find(temp =>
+                    temp.name.toLowerCase().includes('gpu') &&
                     temp.hardware === fan.hardware
                 );
             }
-            
+
             // Fallback: any temperature from same hardware
             if (!relatedTemp) {
                 relatedTemp = finalData.temperatures.find(temp => temp.hardware === fan.hardware);
             }
-            
+
             return {
                 ...fan,
                 temperature: relatedTemp ? relatedTemp.value : null,
@@ -549,13 +667,13 @@ app.get('/api/fans', async (req, res) => {
                 'SpeedFan (legacy)',
                 'Motherboard BIOS/UEFI'
             ],
-            note: dataSource === 'FanControl' ? 
+            note: dataSource === 'FanControl' ?
                 'Using FanControl for real-time fan monitoring and control' :
                 dataSource === 'LibreHardwareMonitor' ?
-                'Using LibreHardwareMonitor for monitoring. Install FanControl for better integration.' :
-                'No fan monitoring service detected. Install FanControl or LibreHardwareMonitor.'
+                    'Using LibreHardwareMonitor for monitoring. Install FanControl for better integration.' :
+                    'No fan monitoring service detected. Install FanControl or LibreHardwareMonitor.'
         };
-        
+
         console.log(`Found ${enhancedFans.length} fans from ${dataSource}`);
         res.json(result);
     } catch (e) {
@@ -569,55 +687,27 @@ app.get('/api/fans', async (req, res) => {
             data_source: 'Error'
         });
     }
-});app.post('/api/fans/bulk/speed', async (req, res) => {
+}); app.post('/api/fans/bulk/speed', async (req, res) => {
     const { fanIds, speed } = req.body || {};
-    
+
     if (!Array.isArray(fanIds) || fanIds.length === 0) {
         return res.status(400).json({ error: 'fanIds array required' });
     }
-    
+
     if (typeof speed !== 'number' || speed < 0 || speed > 100) {
         return res.status(400).json({ error: 'speed must be 0-100' });
     }
 
-    console.log(`Bulk fan speed control via FanControl: ${fanIds.join(', ')} to ${speed}%`);
-
     const results = [];
-    let fanControlDetected = false;
-    
     for (const fanId of fanIds) {
-        const result = await setFanSpeed(fanId, speed);
-        results.push({
-            fanId,
-            ...result
-        });
-        
-        if (result.fancontrol_running) {
-            fanControlDetected = true;
+        if (String(fanId).startsWith('liquidctl:')) {
+            results.push(await setLiquidctlSpeedById(fanId, speed));
+        } else {
+            results.push({ success: false, fanId, error: 'Not controllable (requires liquidctl target)' });
         }
     }
 
-    res.json({
-        ok: true,
-        speed,
-        fanCount: fanIds.length,
-        fanIds,
-        results,
-        method: 'FanControl Integration',
-        fancontrol_detected: fanControlDetected,
-        message: fanControlDetected ? 
-            `FanControl detected - Manual configuration required for ${fanIds.length} fans` :
-            `FanControl not running - Please start FanControl and configure fans manually`,
-        instructions: {
-            step1: 'Download and install FanControl by Rem0o from GitHub if not installed',
-            step2: 'Start FanControl application and configure your fan sensors',
-            step3: `Create custom curves or fixed speeds for selected fans at ${speed}%`,
-            step4: 'Apply configuration and monitor fan speeds in real-time',
-            step5: 'Use FanControl profiles to save different speed configurations'
-        },
-        download_link: 'https://github.com/Rem0o/FanControl.Releases',
-        note: `Bulk fan speed control to ${speed}% requires FanControl configuration`
-    });
+    res.json({ ok: true, speed, fanCount: fanIds.length, fanIds, results, method: 'liquidctl' });
 });
 
 app.post('/api/fans/:fanId/speed', async (req, res) => {
@@ -628,35 +718,8 @@ app.post('/api/fans/:fanId/speed', async (req, res) => {
         return res.status(400).json({ error: 'speed must be 0-100' });
     }
 
-    console.log(`FanControl speed request: ${fanId} to ${speed}%`);
-
-    const result = await setFanSpeed(fanId, speed);
-    
-    res.json({
-        ok: result.fancontrol_running || false,
-        fanId,
-        speed,
-        ...result,
-        method: 'FanControl Integration',
-        instructions: {
-            step1: 'Ensure FanControl is installed and running',
-            step2: `Locate fan sensor for "${fanId}" in FanControl`,
-            step3: `Create a custom curve or set fixed speed to ${speed}%`,
-            step4: 'Apply the configuration and verify fan response',
-            step5: 'Save as a profile for future use'
-        },
-        alternatives: [
-            'FanControl by Rem0o (recommended, free)',
-            'Argus Monitor (paid, comprehensive monitoring)',
-            'SpeedFan (legacy, limited modern support)',
-            'Motherboard BIOS/UEFI fan curves',
-            'GPU manufacturer software (MSI Afterburner, etc.)'
-        ],
-        download_link: 'https://github.com/Rem0o/FanControl.Releases',
-        note: result.fancontrol_running ? 
-            `FanControl detected - Configure fan ${fanId} to ${speed}% manually` :
-            `FanControl not running - Install and configure for fan ${fanId} control`
-    });
+    const result = await setLiquidctlSpeedById(fanId, speed);
+    res.json({ ok: !!result.success, fanId, speed, ...result, method: 'liquidctl' });
 });
 
 app.post('/api/fans/:fanId/auto', async (req, res) => {
@@ -666,81 +729,47 @@ app.post('/api/fans/:fanId/auto', async (req, res) => {
     res.json({
         ok: false,
         fanId,
-        method: 'Manual Configuration Required',
-        message: 'Automatic fan control requires manual software configuration',
-        instructions: {
-            step1: 'Open FanControl, Argus Monitor, or your fan control software',
-            step2: 'Configure automatic temperature curves for the selected fan',
-            step3: 'Enable automatic mode in the software',
-            step4: 'Fan will respond to temperature changes automatically'
-        },
-        note: `Fan ${fanId} automatic control requires configuration in fan control software`
+        method: 'Curves',
+        message: 'Use /api/fans/curves endpoints to enable automatic control based on temperature.'
     });
 });
 
 // ---- FanControl Integration ----
-app.post('/api/fans/fancontrol', (req, res) => {
-    const { fanId, speed } = req.body || {};
-    if (!fanId || typeof speed !== 'number') return res.status(400).json({ error: 'fanId, speed required' });
-    
-    // Check if FanControl is running and provide configuration guidance
-    exec('powershell.exe -NoProfile -Command "Get-Process -Name FanControl -ErrorAction SilentlyContinue"', 
-        { windowsHide: true }, (err, stdout, stderr) => {
-            if (err || !stdout.trim()) {
-                res.json({ 
-                    ok: false, 
-                    fancontrol_running: false,
-                    error: 'FanControl not running',
-                    message: 'Please start FanControl application',
-                    download: 'https://github.com/Rem0o/FanControl.Releases'
-                });
-            } else {
-                res.json({ 
-                    ok: true, 
-                    fancontrol_running: true,
-                    fanId,
-                    speed,
-                    message: `FanControl is running - Configure fan ${fanId} to ${speed}% manually`,
-                    instructions: {
-                        step1: 'Open FanControl interface',
-                        step2: `Find sensor for fan "${fanId}"`,
-                        step3: `Create custom curve with ${speed}% fixed speed`,
-                        step4: 'Apply configuration'
-                    }
-                });
-            }
-        });
+// New curves endpoints
+app.get('/api/fans/curves', (req, res) => {
+    res.json({ enabled: !!curvesState.enabled, curves: curvesState.curves });
+});
+app.post('/api/fans/curves', (req, res) => {
+    const { id, targetId, targetName, sensorId, sensorName, points } = req.body || {};
+    if (!targetId || !sensorId || !Array.isArray(points)) return res.status(400).json({ error: 'targetId, sensorId, points required' });
+    const curve = { id: id || `c${Date.now()}`, targetId, targetName, sensorId, sensorName, points: points.map(p => ({ t: +p.t, s: +p.s })) };
+    const idx = curvesState.curves.findIndex(c => c.id === curve.id || c.targetId === curve.targetId);
+    if (idx >= 0) curvesState.curves[idx] = curve; else curvesState.curves.push(curve);
+    saveCurves();
+    res.json({ ok: true, curve });
+});
+app.delete('/api/fans/curves/:id', (req, res) => {
+    const id = req.params.id;
+    const before = curvesState.curves.length;
+    curvesState.curves = curvesState.curves.filter(c => c.id !== id);
+    saveCurves();
+    res.json({ ok: true, removed: before - curvesState.curves.length });
+});
+app.post('/api/fans/curves/enable', (req, res) => {
+    const { enabled } = req.body || {};
+    curvesState.enabled = !!enabled;
+    saveCurves();
+    res.json({ ok: true, enabled: curvesState.enabled });
 });
 
-// ---- Check FanControl status ----
-app.get('/api/fans/fancontrol/status', (req, res) => {
-    exec('powershell.exe -NoProfile -Command "Get-Process -Name FanControl -ErrorAction SilentlyContinue | Select-Object ProcessName, Id, StartTime"', 
-        { windowsHide: true, timeout: 3000 }, (err, stdout, stderr) => {
-            if (err || !stdout.trim()) {
-                res.json({
-                    available: false,
-                    running: false,
-                    error: 'FanControl not running',
-                    message: 'FanControl application not detected',
-                    download_link: 'https://github.com/Rem0o/FanControl.Releases',
-                    installation_guide: {
-                        step1: 'Download FanControl from GitHub releases',
-                        step2: 'Extract and run FanControl.exe as administrator',
-                        step3: 'Configure your fan sensors and curves',
-                        step4: 'Keep FanControl running for this integration to work'
-                    }
-                });
-            } else {
-                res.json({
-                    available: true,
-                    running: true,
-                    process_info: stdout.trim(),
-                    message: 'FanControl is running and ready for configuration',
-                    integration_status: 'Manual configuration required',
-                    note: 'This integration provides guidance for FanControl setup rather than direct API control'
-                });
-            }
-        });
+// liquidctl status & sensors
+app.get('/api/fans/liquidctl/status', async (req, res) => {
+    const lq = await listLiquidctlDevices();
+    res.json({ available: !!lq.available, devices: lq.devices || [], error: lq.error });
+});
+app.get('/api/fans/sensors', async (req, res) => {
+    const libre = await readLibreHardwareFans();
+    res.json({ sensors: libre.temperatures || [], libre_hardware_available: !libre.error, error: libre.error });
 });
 
 // ---- Client-side error logging ----
