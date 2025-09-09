@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Fan Control</title>
+  <link rel="stylesheet" href="/css/styles.css">
+  <style>
+    .fan-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      gap: 1rem;
+      margin: 1rem 0;
+    }
+    
+    .fan-card {
+      background: #2a2a2a;
+      border: 2px solid #444;
+      border-radius: 8px;
+      padding: 1rem;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      position: relative;
+    }
+    
+    .fan-card:hover {
+      border-color: #0078d4;
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(0, 120, 212, 0.3);
+    }
+    
+    .fan-card.selected {
+      border-color: #0078d4;
+      background: #1e3a5f;
+      box-shadow: 0 0 0 2px rgba(0, 120, 212, 0.5);
+    }
+    
+    .fan-card.offline {
+      opacity: 0.6;
+      border-color: #666;
+    }
+    
+    .fan-header {
+      display: flex;
+      justify-content: between;
+      align-items: center;
+      margin-bottom: 0.5rem;
+    }
+    
+    .fan-name {
+      font-weight: bold;
+      color: #fff;
+      margin: 0;
+    }
+    
+    .fan-status-badge {
+      padding: 0.2rem 0.5rem;
+      border-radius: 12px;
+      font-size: 0.75rem;
+      font-weight: bold;
+      text-transform: uppercase;
+    }
+    
+    .fan-status-badge.running {
+      background: #107c10;
+      color: white;
+    }
+    
+    .fan-status-badge.stopped {
+      background: #d13438;
+      color: white;
+    }
+    
+    .fan-status-badge.warning {
+      background: #ff8c00;
+      color: white;
+    }
+    
+    .fan-details {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.5rem;
+      margin: 0.5rem 0;
+    }
+    
+    .fan-metric {
+      text-align: center;
+    }
+    
+    .fan-metric-label {
+      font-size: 0.8rem;
+      color: #ccc;
+      margin-bottom: 0.2rem;
+    }
+    
+    .fan-metric-value {
+      font-size: 1.2rem;
+      font-weight: bold;
+      color: #fff;
+    }
+    
+    .fan-hardware {
+      font-size: 0.8rem;
+      color: #999;
+      margin-top: 0.5rem;
+      border-top: 1px solid #444;
+      padding-top: 0.5rem;
+    }
+    
+    .control-panel {
+      background: #333;
+      border-radius: 8px;
+      padding: 1.5rem;
+      margin: 1rem 0;
+      border: 1px solid #555;
+    }
+    
+    .control-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 1rem;
+    }
+    
+    .selected-count {
+      background: #0078d4;
+      color: white;
+      padding: 0.3rem 0.8rem;
+      border-radius: 16px;
+      font-size: 0.9rem;
+    }
+    
+    .speed-control {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      margin: 1rem 0;
+    }
+    
+    .speed-slider {
+      flex: 1;
+      height: 6px;
+      background: #555;
+      border-radius: 3px;
+      outline: none;
+      -webkit-appearance: none;
+    }
+    
+    .speed-slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 20px;
+      height: 20px;
+      background: #0078d4;
+      border-radius: 50%;
+      cursor: pointer;
+    }
+    
+    .speed-display {
+      min-width: 60px;
+      text-align: center;
+      font-weight: bold;
+      font-size: 1.1rem;
+    }
+    
+    .control-buttons {
+      display: flex;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+    }
+    
+    .btn {
+      padding: 0.5rem 1rem;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-weight: bold;
+      transition: all 0.2s ease;
+    }
+    
+    .btn-primary {
+      background: #0078d4;
+      color: white;
+    }
+    
+    .btn-primary:hover {
+      background: #106ebe;
+    }
+    
+    .btn-secondary {
+      background: #6c757d;
+      color: white;
+    }
+    
+    .btn-secondary:hover {
+      background: #5a6268;
+    }
+    
+    .btn-danger {
+      background: #dc3545;
+      color: white;
+    }
+    
+    .btn-danger:hover {
+      background: #c82333;
+    }
+    
+    .btn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+    
+    .status-info {
+      background: #1a4480;
+      border: 1px solid #0078d4;
+      border-radius: 4px;
+      padding: 1rem;
+      margin: 1rem 0;
+    }
+    
+    .status-warning {
+      background: #4d3319;
+      border: 1px solid #ff8c00;
+      border-radius: 4px;
+      padding: 1rem;
+      margin: 1rem 0;
+    }
+  </style>
+</head>
+<body>
+  <div id="sidebar"></div>
+  <main>
+    <h1>Fan Control</h1>
+    <div id="fan-content">
+      
+      <div id="status-message" style="display: none;"></div>
+      
+      <section>
+        <h2>Fan Overview</h2>
+        <div id="fan-overview">
+          <em>Loading fan information...</em>
+        </div>
+        <div id="liquidctl-status">
+          <em>Checking FanControl status...</em>
+        </div>
+        <div id="fan-grid" class="fan-grid">
+          <!-- Fan cards will be dynamically added here -->
+        </div>
+      </section>
+      
+      <section>
+        <div class="control-panel" id="control-panel" style="display: none;">
+          <div class="control-header">
+            <h3>Multi-Fan Control</h3>
+            <span class="selected-count" id="selected-count">0 fans selected</span>
+          </div>
+          
+          <div class="speed-control">
+            <label>Speed:</label>
+            <input type="range" id="fan-speed-slider" class="speed-slider" min="0" max="100" value="50">
+            <div class="speed-display">
+              <span id="fan-speed-value">50</span>%
+            </div>
+          </div>
+          
+          <div class="control-buttons">
+            <button type="button" id="apply-speed-btn" class="btn btn-primary">Apply Speed</button>
+            <button type="button" id="auto-mode-btn" class="btn btn-secondary">Return to Auto</button>
+            <button type="button" id="clear-selection-btn" class="btn btn-danger">Clear Selection</button>
+          </div>
+          
+          <div id="control-result"></div>
+        </div>
+      </section>
+      
+      <section>
+        <h2>FanControl Integration</h2>
+        <div class="control-panel">
+          <div class="control-header">
+            <h3>Direct FanControl Setup</h3>
+          </div>
+          
+          <div style="margin: 1rem 0;">
+            <label for="fancontrol-fanid">Fan ID:</label>
+            <input type="text" id="fancontrol-fanid" placeholder="Enter fan ID (e.g., CPU Fan, System Fan)" style="margin: 0 1rem; padding: 0.5rem; width: 200px;">
+          </div>
+          
+          <div class="speed-control">
+            <label>Speed:</label>
+            <input type="range" id="fancontrol-speed-slider" class="speed-slider" min="0" max="100" value="50">
+            <div class="speed-display">
+              <span id="fancontrol-speed-value">50</span>%
+            </div>
+          </div>
+          
+          <div class="control-buttons">
+            <button type="button" id="fancontrol-apply-btn" class="btn btn-primary">Configure in FanControl</button>
+            <button type="button" id="fancontrol-status-btn" class="btn btn-secondary">Check FanControl Status</button>
+          </div>
+          
+          <div id="fancontrol-result"></div>
+        </div>
+      </section>
+      
+      <section>
+        <h2>Control Information</h2>
+        <div id="control-info">
+          <em>Loading control information...</em>
+        </div>
+      </section>
+    </div>
+  </main>
+  <script src="/js/sidebar.js"></script>
+  <script src="/js/main.js"></script>
+</body>
+</html>

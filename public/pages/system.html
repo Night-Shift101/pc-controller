@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>System</title>
+  <link rel="stylesheet" href="/css/styles.css">
+</head>
+<body>
+  <div id="sidebar"></div>
+  <main>
+    <h1>System</h1>
+    <div id="system-content">
+      <section>
+        <h2>System Actions</h2>
+        <button onclick="systemAction('lock')">Lock</button>
+        <button onclick="systemAction('sleep')">Sleep</button>
+        <button onclick="systemAction('shutdown')">Shutdown</button>
+        <button onclick="systemAction('restart')">Restart</button>
+      </section>
+      <section>
+        <h2>Set Volume</h2>
+        <form id="volume-form">
+          <input type="range" id="volume-slider" min="0" max="100" value="50">
+          <span id="volume-value">50</span>
+          <button type="submit">Set Volume</button>
+        </form>
+        <div id="volume-result"></div>
+      </section>
+    </div>
+  </main>
+  <script src="/js/sidebar.js"></script>
+  <script src="/js/main.js"></script>
+</body>
+</html>
